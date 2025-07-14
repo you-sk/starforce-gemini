@@ -1,356 +1,159 @@
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
 
-// Game settings
+// --- Constants & Global State ---
 const canvasWidth = canvas.width;
 const canvasHeight = canvas.height;
 
-// --- Asset Loading ---
+const player = { x: canvasWidth / 2 - 25, y: canvasHeight - 60, width: 50, height: 50, speed: 5 };
+const bullets = [];
+const enemies = [];
+const stars = [];
+const keys = {};
+
+let score = 0;
+let isGameOver = false;
+let enemySpawnTimer = 0;
+
+// --- Asset Manager ---
 const assetManager = {
     images: {},
-    sounds: {},
-    imageUrls: {
-        player: 'assets/player.svg',
-        enemy1: 'assets/enemy1.svg',
-        enemy2: 'assets/enemy2.svg',
-    },
-    soundUrls: {
-        bgm: 'assets/bgm.wav',
-        shoot: 'assets/shoot.wav',
-        explosion: 'assets/explosion.wav',
-    },
+    imageUrls: { player: 'assets/player.svg', enemy1: 'assets/enemy1.svg', enemy2: 'assets/enemy2.svg' },
     totalAssets: 0,
     loadedAssets: 0,
-    audioContext: null,
-    bgmSource: null,
-
-    init() {
-        this.totalAssets = Object.keys(this.imageUrls).length + Object.keys(this.soundUrls).length;
-        try {
-            this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
-        } catch (e) {
-            console.error('Web Audio API is not supported in this browser');
-        }
-    },
-
+    init() { this.totalAssets = Object.keys(this.imageUrls).length; },
     load(callback) {
-        // Load Images
+        if (this.totalAssets === 0) { callback(); return; }
         for (const key in this.imageUrls) {
             const img = new Image();
             img.src = this.imageUrls[key];
-            img.onload = () => this.assetLoaded(callback);
+            img.onload = () => { this.loadedAssets++; if (this.loadedAssets === this.totalAssets) callback(); };
             this.images[key] = img;
         }
-
-        // Load Sounds
-        if (!this.audioContext) {
-            // If web audio is not supported, just count sound files as loaded.
-            this.loadedAssets += Object.keys(this.soundUrls).length;
-            if (this.loadedAssets === this.totalAssets) {
-                callback();
-            }
-            return;
-        }
-
-        for (const key in this.soundUrls) {
-            fetch(this.soundUrls[key])
-                .then(response => response.arrayBuffer())
-                .then(arrayBuffer => this.audioContext.decodeAudioData(arrayBuffer))
-                .then(audioBuffer => {
-                    this.sounds[key] = audioBuffer;
-                    this.assetLoaded(callback);
-                })
-                .catch(error => {
-                    console.error(`Error loading sound ${key}:`, error);
-                    this.assetLoaded(callback); // Still count as loaded to not hang the game
-                });
-        }
     },
-
-    assetLoaded(callback) {
-        this.loadedAssets++;
-        if (this.loadedAssets === this.totalAssets) {
-            callback();
-        }
-    },
-
-    playSound(key, loop = false) {
-        if (!this.audioContext || !this.sounds[key]) return null;
-        const source = this.audioContext.createBufferSource();
-        source.buffer = this.sounds[key];
-        source.connect(this.audioContext.destination);
-        source.loop = loop;
-        source.start(0);
-        return source;
-    },
-
-    playBgm() {
-        if (this.bgmSource) {
-            this.bgmSource.stop();
-        }
-        this.bgmSource = this.playSound('bgm', true);
-    },
-
-    stopBgm() {
-        if (this.bgmSource) {
-            this.bgmSource.stop();
-            this.bgmSource = null; // Prevent re-stopping
-        }
-    }
 };
 
-// --- Game Objects ---
-const player = {
-    x: canvasWidth / 2 - 25,
-    y: canvasHeight - 60,
-    width: 50,
-    height: 50,
-    speed: 5,
-    dx: 0
+// --- Audio Synthesis ---
+const audio = {
+    audioContext: null, bgmOscillator: null, bgmGain: null, bgmTimer: null,
+    init() { try { this.audioContext = new (window.AudioContext || window.webkitAudioContext)(); } catch(e) { console.error('Web Audio API is not supported'); } },
+    resume() { if (this.audioContext && this.audioContext.state === 'suspended') this.audioContext.resume(); },
+    playShoot() { if (!this.audioContext) return; const o = this.audioContext.createOscillator(), g = this.audioContext.createGain(); o.connect(g); g.connect(this.audioContext.destination); o.type = 'square'; o.frequency.setValueAtTime(880, this.audioContext.currentTime); g.gain.setValueAtTime(0.1, this.audioContext.currentTime); g.gain.exponentialRampToValueAtTime(0.0001, this.audioContext.currentTime + 0.1); o.start(); o.stop(this.audioContext.currentTime + 0.1); },
+    playExplosion() { if (!this.audioContext) return; const buf = this.audioContext.createBuffer(1, this.audioContext.sampleRate * 0.2, this.audioContext.sampleRate); const out = buf.getChannelData(0); for (let i = 0; i < buf.length; i++) out[i] = Math.random() * 2 - 1; const n = this.audioContext.createBufferSource(); n.buffer = buf; const g = this.audioContext.createGain(); g.gain.setValueAtTime(0.2, this.audioContext.currentTime); g.gain.exponentialRampToValueAtTime(0.0001, this.audioContext.currentTime + 0.2); n.connect(g); g.connect(this.audioContext.destination); n.start(); n.stop(this.audioContext.currentTime + 0.2); },
+    playBgm() { if (!this.audioContext) return; this.stopBgm(); const notes = [261.63, 293.66, 329.63, 349.23, 392.00, 440.00, 493.88, 523.25]; let i = 0; this.bgmOscillator = this.audioContext.createOscillator(); this.bgmGain = this.audioContext.createGain(); this.bgmOscillator.connect(this.bgmGain); this.bgmGain.connect(this.audioContext.destination); this.bgmOscillator.type = 'triangle'; this.bgmGain.gain.value = 0.05; this.bgmOscillator.start(); const next = () => { this.bgmOscillator.frequency.setValueAtTime(notes[i++ % notes.length], this.audioContext.currentTime); this.bgmTimer = setTimeout(next, 200); }; next(); },
+    stopBgm() { if (this.bgmTimer) clearTimeout(this.bgmTimer); if (this.bgmOscillator) { this.bgmOscillator.stop(); this.bgmOscillator = null; } },
 };
 
-const bullets = [];
-const bulletSpeed = 7;
-
-const enemies = [];
-const enemyWidth = 50;
-const enemyHeight = 50;
-let enemySpawnTimer = 0;
-
-const stars = [];
-
-// --- Game Logic ---
+// --- Core Game Logic & Drawing Functions ---
 function createStars() {
+    if (stars.length > 0) return; // Don't create stars if they already exist
     for (let i = 0; i < 100; i++) {
-        stars.push({
-            x: Math.random() * canvasWidth,
-            y: Math.random() * canvasHeight,
-            size: Math.random() * 2 + 1,
-            speed: Math.random() * 1 + 0.5
-        });
+        stars.push({ x: Math.random() * canvasWidth, y: Math.random() * canvasHeight, size: Math.random() * 2 + 1, speed: Math.random() * 1 + 0.5 });
     }
 }
 
 function drawStars() {
     ctx.fillStyle = 'white';
-    stars.forEach(star => {
-        ctx.fillRect(star.x, star.y, star.size, star.size);
-    });
+    stars.forEach(star => ctx.fillRect(star.x, star.y, star.size, star.size));
 }
 
-function updateStars() {
-    stars.forEach(star => {
-        star.y += star.speed;
-        if (star.y > canvasHeight) {
-            star.y = 0;
-            star.x = Math.random() * canvasWidth;
-        }
-    });
-}
-
-function drawPlayer() {
-    ctx.drawImage(assetManager.images.player, player.x, player.y, player.width, player.height);
-}
-
-function movePlayer() {
-    player.x += player.dx;
-    if (player.x < 0) player.x = 0;
-    if (player.x + player.width > canvasWidth) player.x = canvasWidth - player.width;
-}
-
-function drawBullets() {
-    ctx.fillStyle = 'yellow';
-    bullets.forEach(bullet => {
-        ctx.fillRect(bullet.x, bullet.y, bullet.width, bullet.height);
-    });
-}
-
-function moveBullets() {
-    for (let i = bullets.length - 1; i >= 0; i--) {
-        bullets[i].y -= bulletSpeed;
-        if (bullets[i].y + bullets[i].height < 0) {
-            bullets.splice(i, 1);
-        }
+function handleInput() {
+    if (isGameOver) {
+        if (keys['r'] || keys['R']) resetGame();
+        return;
     }
-}
-
-function spawnEnemies() {
-    enemySpawnTimer++;
-    if (enemySpawnTimer % 100 === 0) {
-        const x = Math.random() * (canvasWidth - enemyWidth);
-        enemies.push({ x, y: -enemyHeight, width: enemyWidth, height: enemyHeight, type: 'enemy1', speed: 2 });
-    }
-    if (enemySpawnTimer % 250 === 0) {
-        const x = Math.random() * (canvasWidth - enemyWidth);
-        enemies.push({ x, y: -enemyHeight, width: enemyWidth, height: enemyHeight, type: 'enemy2', speed: 1, angle: 0 });
-    }
-}
-
-function drawEnemies() {
-    enemies.forEach(enemy => {
-        if(assetManager.images[enemy.type]){
-            ctx.drawImage(assetManager.images[enemy.type], enemy.x, enemy.y, enemy.width, enemy.height);
-        }
-    });
-}
-
-function moveEnemies() {
-    for (let i = enemies.length - 1; i >= 0; i--) {
-        const enemy = enemies[i];
-        if (enemy.type === 'enemy1') {
-            enemy.y += enemy.speed;
-        } else if (enemy.type === 'enemy2') {
-            enemy.y += enemy.speed;
-            enemy.x += Math.sin(enemy.angle) * 2;
-            enemy.angle += 0.1;
-        }
-
-        if (enemy.y > canvasHeight) {
-            enemies.splice(i, 1);
-        }
-    }
-}
-
-let score = 0;
-function drawScore() {
-    ctx.fillStyle = 'white';
-    ctx.font = '20px Arial';
-    ctx.fillText(`Score: ${score}`, 10, 30);
-}
-
-function updateScore(points) {
-    score += points;
-}
-
-function detectCollisions() {
-    // Bullets vs Enemies
-    for (let i = bullets.length - 1; i >= 0; i--) {
-        for (let j = enemies.length - 1; j >= 0; j--) {
-            const bullet = bullets[i];
-            const enemy = enemies[j];
-            if (bullet && enemy &&
-                bullet.x < enemy.x + enemy.width &&
-                bullet.x + bullet.width > enemy.x &&
-                bullet.y < enemy.y + enemy.height &&
-                bullet.y + bullet.height > enemy.y) {
-
-                assetManager.playSound('explosion');
-                bullets.splice(i, 1);
-                enemies.splice(j, 1);
-                updateScore(10);
-                break; // Move to next bullet
-            }
-        }
-    }
-
-    // Player vs Enemies
-    enemies.forEach(enemy => {
-        if (player.x < enemy.x + enemy.width &&
-            player.x + player.width > enemy.x &&
-            player.y < enemy.y + enemy.height &&
-            player.y + player.height > enemy.y) {
-            gameOver();
-        }
-    });
-}
-
-let isGameOver = false;
-function gameOver() {
-    if (isGameOver) return;
-    isGameOver = true;
-    assetManager.stopBgm();
-}
-
-function drawGameOver() {
-    if (!isGameOver) return;
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-    ctx.fillRect(0, 0, canvasWidth, canvasHeight);
-    ctx.fillStyle = 'white';
-    ctx.font = '50px Arial';
-    ctx.textAlign = 'center';
-    ctx.fillText('GAME OVER', canvasWidth / 2, canvasHeight / 2);
-    ctx.font = '20px Arial';
-    ctx.fillText('Press R to Restart', canvasWidth / 2, canvasHeight / 2 + 40);
-}
-
-function resetGame() {
-    player.x = canvasWidth / 2 - 25;
-    player.y = canvasHeight - 60;
-    bullets.length = 0;
-    enemies.length = 0;
-    score = 0;
-    isGameOver = false;
-    assetManager.playBgm();
-    gameLoop();
-}
-
-function clearCanvas() {
-    ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+    if (keys['ArrowLeft'] || keys['a']) player.x -= player.speed;
+    if (keys['ArrowRight'] || keys['d']) player.x += player.speed;
+    if (keys[' ']) { audio.playShoot(); bullets.push({ x: player.x + player.width / 2 - 2.5, y: player.y, width: 5, height: 10 }); keys[' '] = false; }
 }
 
 function update() {
     if (isGameOver) return;
-    movePlayer();
-    moveBullets();
-    spawnEnemies();
-    moveEnemies();
-    updateStars();
-    detectCollisions();
+    handleInput();
+
+    // Player movement & wall detection
+    if (player.x < 0) player.x = 0;
+    if (player.x + player.width > canvasWidth) player.x = canvasWidth - player.width;
+
+    // Stars
+    stars.forEach(star => { star.y += star.speed; if (star.y > canvasHeight) { star.y = 0; star.x = Math.random() * canvasWidth; } });
+
+    // Bullets
+    for (let i = bullets.length - 1; i >= 0; i--) { bullets[i].y -= 7; if (bullets[i].y < 0) bullets.splice(i, 1); }
+
+    // Enemies
+    enemySpawnTimer++;
+    if (enemySpawnTimer % 100 === 0) enemies.push({ x: Math.random() * (canvasWidth - 50), y: -50, width: 50, height: 50, type: 'enemy1', speed: 2 });
+    if (enemySpawnTimer % 250 === 0) enemies.push({ x: Math.random() * (canvasWidth - 50), y: -50, width: 50, height: 50, type: 'enemy2', speed: 1, angle: 0 });
+    for (let i = enemies.length - 1; i >= 0; i--) {
+        const e = enemies[i];
+        if (e.type === 'enemy1') e.y += e.speed;
+        else { e.y += e.speed; e.x += Math.sin(e.angle) * 2; e.angle += 0.1; }
+        if (e.y > canvasHeight) enemies.splice(i, 1);
+    }
+
+    // Collisions
+    for (let i = bullets.length - 1; i >= 0; i--) {
+        for (let j = enemies.length - 1; j >= 0; j--) {
+            const b = bullets[i], e = enemies[j];
+            if (b && e && b.x < e.x + e.width && b.x + b.width > e.x && b.y < e.y + e.height && b.y + b.height > e.y) {
+                audio.playExplosion(); bullets.splice(i, 1); enemies.splice(j, 1); score += 10; break;
+            }
+        }
+    }
+    enemies.forEach(e => { if (player.x < e.x + e.width && player.x + e.width > e.x && player.y < e.y + e.height && player.y + e.height > e.y) gameOver(); });
 }
 
 function draw() {
-    clearCanvas();
+    ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, canvasWidth, canvasHeight);
     drawStars();
-    drawPlayer();
-    drawBullets();
-    drawEnemies();
-    drawScore();
-    drawGameOver();
+    ctx.drawImage(assetManager.images.player, player.x, player.y, player.width, player.height);
+    ctx.fillStyle = 'yellow';
+    bullets.forEach(b => ctx.fillRect(b.x, b.y, b.width, b.height));
+    enemies.forEach(e => { if (assetManager.images[e.type]) ctx.drawImage(assetManager.images[e.type], e.x, e.y, e.width, e.height); });
+    ctx.fillStyle = 'white';
+    ctx.font = '20px Arial';
+    ctx.fillText(`Score: ${score}`, 10, 30);
+    if (isGameOver) {
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+        ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+        ctx.fillStyle = 'white';
+        ctx.font = '50px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText('GAME OVER', canvasWidth / 2, canvasHeight / 2);
+        ctx.font = '20px Arial';
+        ctx.fillText('Press R to Restart', canvasWidth / 2, canvasHeight / 2 + 40);
+    }
+}
+
+function gameOver() {
+    if (isGameOver) return;
+    isGameOver = true;
+    audio.stopBgm();
+}
+
+function resetGame() {
+    player.x = canvasWidth / 2 - 25; player.y = canvasHeight - 60;
+    bullets.length = 0; enemies.length = 0; score = 0; isGameOver = false;
+    audio.playBgm();
+    gameLoop();
 }
 
 function gameLoop() {
-    if (isGameOver) {
-        drawGameOver();
-        return;
-    }
+    if (isGameOver) { draw(); return; }
     update();
     draw();
     requestAnimationFrame(gameLoop);
 }
 
-// --- Input Handling ---
-function keyDown(e) {
-    if (isGameOver && (e.key === 'r' || e.key === 'R')) {
-        resetGame();
-        return;
-    }
-    if (isGameOver) return;
-
-    if (e.key === 'ArrowRight' || e.key === 'Right') {
-        player.dx = player.speed;
-    } else if (e.key === 'ArrowLeft' || e.key === 'Left') {
-        player.dx = -player.speed;
-    } else if (e.key === ' ' || e.key === 'Spacebar') {
-        assetManager.playSound('shoot');
-        bullets.push({
-            x: player.x + player.width / 2 - 2.5,
-            y: player.y,
-            width: 5,
-            height: 10,
-        });
-    }
-}
-
-function keyUp(e) {
-    if (e.key === 'ArrowRight' || e.key === 'Right' || e.key === 'ArrowLeft' || e.key === 'Left') {
-        player.dx = 0;
-    }
-}
-
 // --- Game Initialization ---
 function drawStartScreen() {
-    clearCanvas();
-    createStars(); // Draw stars on the start screen as well
+    ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+    createStars();
     drawStars();
     ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
     ctx.fillRect(0, 0, canvasWidth, canvasHeight);
@@ -363,26 +166,20 @@ function drawStartScreen() {
 }
 
 function main() {
+    document.addEventListener('keydown', e => keys[e.key] = true);
+    document.addEventListener('keyup', e => keys[e.key] = false);
+    audio.init();
     assetManager.init();
-    drawStartScreen(); // Show start screen immediately
+    drawStartScreen();
     assetManager.load(() => {
-        console.log('All assets loaded!');
-        // Replace the start screen with one that is ready to start
-        drawStartScreen(); 
+        console.log('All images loaded!');
         canvas.addEventListener('click', startGame, { once: true });
     });
 }
 
 function startGame() {
-    // Resume audio context on user gesture
-    if (assetManager.audioContext && assetManager.audioContext.state === 'suspended') {
-        assetManager.audioContext.resume();
-    }
-    assetManager.playBgm();
-    gameLoop();
+    audio.resume();
+    resetGame();
 }
-
-document.addEventListener('keydown', keyDown);
-document.addEventListener('keyup', keyUp);
 
 main();
