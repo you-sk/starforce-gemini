@@ -5,10 +5,12 @@ const ctx = canvas.getContext('2d');
 const canvasWidth = canvas.width;
 const canvasHeight = canvas.height;
 
-const player = { x: canvasWidth / 2 - 25, y: canvasHeight - 60, width: 50, height: 50, speed: 5 };
+const player = { x: canvasWidth / 2 - 25, y: canvasHeight - 60, width: 50, height: 50, speed: 5, lives: 3, invincible: false, invincibilityTimer: 0, fireCooldown: 0, powerUpTimer: 0 };
 const bullets = [];
 const enemies = [];
 const stars = [];
+const particles = [];
+const powerUps = [];
 const keys = {};
 
 let score = 0;
@@ -19,8 +21,7 @@ let enemySpawnTimer = 0;
 const assetManager = {
     images: {},
     imageUrls: { player: 'assets/player.svg', enemy1: 'assets/enemy1.svg', enemy2: 'assets/enemy2.svg' },
-    totalAssets: 0,
-    loadedAssets: 0,
+    totalAssets: 0, loadedAssets: 0,
     init() { this.totalAssets = Object.keys(this.imageUrls).length; },
     load(callback) {
         if (this.totalAssets === 0) { callback(); return; }
@@ -46,15 +47,24 @@ const audio = {
 
 // --- Core Game Logic & Drawing Functions ---
 function createStars() {
-    if (stars.length > 0) return; // Don't create stars if they already exist
-    for (let i = 0; i < 100; i++) {
-        stars.push({ x: Math.random() * canvasWidth, y: Math.random() * canvasHeight, size: Math.random() * 2 + 1, speed: Math.random() * 1 + 0.5 });
-    }
+    if (stars.length > 0) return;
+    for (let i = 0; i < 100; i++) stars.push({ x: Math.random() * canvasWidth, y: Math.random() * canvasHeight, size: Math.random() * 2 + 1, speed: Math.random() * 1 + 0.5 });
 }
 
 function drawStars() {
     ctx.fillStyle = 'white';
     stars.forEach(star => ctx.fillRect(star.x, star.y, star.size, star.size));
+}
+
+function createExplosion(x, y, color) {
+    for (let i = 0; i < 20; i++) {
+        particles.push({
+            x, y, color,
+            vx: (Math.random() - 0.5) * 4,
+            vy: (Math.random() - 0.5) * 4,
+            lifespan: 30 // 30 frames
+        });
+    }
 }
 
 function handleInput() {
@@ -64,12 +74,22 @@ function handleInput() {
     }
     if (keys['ArrowLeft'] || keys['a']) player.x -= player.speed;
     if (keys['ArrowRight'] || keys['d']) player.x += player.speed;
-    if (keys[' ']) { audio.playShoot(); bullets.push({ x: player.x + player.width / 2 - 2.5, y: player.y, width: 5, height: 10 }); keys[' '] = false; }
+    if (keys[' '] && player.fireCooldown <= 0) {
+        audio.playShoot();
+        bullets.push({ x: player.x + player.width / 2 - 2.5, y: player.y, width: 5, height: 10 });
+        player.fireCooldown = player.powerUpTimer > 0 ? 10 : 20; // Cooldown in frames
+    }
 }
 
 function update() {
     if (isGameOver) return;
     handleInput();
+
+    // Cooldowns
+    if (player.fireCooldown > 0) player.fireCooldown--;
+    if (player.powerUpTimer > 0) player.powerUpTimer--;
+    if (player.invincibilityTimer > 0) player.invincibilityTimer--;
+    else player.invincible = false;
 
     // Player movement & wall detection
     if (player.x < 0) player.x = 0;
@@ -80,6 +100,24 @@ function update() {
 
     // Bullets
     for (let i = bullets.length - 1; i >= 0; i--) { bullets[i].y -= 7; if (bullets[i].y < 0) bullets.splice(i, 1); }
+
+    // PowerUps
+    for (let i = powerUps.length - 1; i >= 0; i--) {
+        const p = powerUps[i];
+        p.y += 2;
+        if (p.y > canvasHeight) powerUps.splice(i, 1);
+        if (player.x < p.x + p.width && player.x + player.width > p.x && player.y < p.y + p.height && player.y + player.height > p.y) {
+            player.powerUpTimer = 600; // 10 seconds at 60fps
+            powerUps.splice(i, 1);
+        }
+    }
+
+    // Particles
+    for (let i = particles.length - 1; i >= 0; i--) {
+        const p = particles[i];
+        p.x += p.vx; p.y += p.vy; p.lifespan--;
+        if (p.lifespan <= 0) particles.splice(i, 1);
+    }
 
     // Enemies
     enemySpawnTimer++;
@@ -93,15 +131,28 @@ function update() {
     }
 
     // Collisions
+    // Bullets vs Enemies
     for (let i = bullets.length - 1; i >= 0; i--) {
         for (let j = enemies.length - 1; j >= 0; j--) {
             const b = bullets[i], e = enemies[j];
             if (b && e && b.x < e.x + e.width && b.x + b.width > e.x && b.y < e.y + e.height && b.y + b.height > e.y) {
-                audio.playExplosion(); bullets.splice(i, 1); enemies.splice(j, 1); score += 10; break;
+                audio.playExplosion(); createExplosion(e.x + e.width / 2, e.y + e.height / 2, 'red');
+                if (Math.random() < 0.1) powerUps.push({ x: e.x, y: e.y, width: 20, height: 20 });
+                bullets.splice(i, 1); enemies.splice(j, 1); score += 10; break;
             }
         }
     }
-    enemies.forEach(e => { if (player.x < e.x + e.width && player.x + e.width > e.x && player.y < e.y + e.height && player.y + e.height > e.y) gameOver(); });
+    // Player vs Enemies
+    if (!player.invincible) {
+        enemies.forEach(e => {
+            if (player.x < e.x + e.width && player.x + player.width > e.x && player.y < e.y + e.height && player.y + player.height > e.y) {
+                player.lives--;
+                audio.playExplosion(); createExplosion(player.x + player.width / 2, player.y + player.height / 2, 'white');
+                if (player.lives <= 0) gameOver();
+                else { player.invincible = true; player.invincibilityTimer = 120; }
+            }
+        });
+    }
 }
 
 function draw() {
@@ -109,13 +160,27 @@ function draw() {
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, canvasWidth, canvasHeight);
     drawStars();
-    ctx.drawImage(assetManager.images.player, player.x, player.y, player.width, player.height);
+
+    // Draw player (with invincibility blink)
+    if (!player.invincible || Math.floor(player.invincibilityTimer / 10) % 2 === 0) {
+        ctx.drawImage(assetManager.images.player, player.x, player.y, player.width, player.height);
+    }
+
+    // Draw bullets, enemies, powerups, particles
     ctx.fillStyle = 'yellow';
     bullets.forEach(b => ctx.fillRect(b.x, b.y, b.width, b.height));
     enemies.forEach(e => { if (assetManager.images[e.type]) ctx.drawImage(assetManager.images[e.type], e.x, e.y, e.width, e.height); });
+    ctx.fillStyle = 'lime';
+    ctx.font = 'bold 20px Arial';
+    powerUps.forEach(p => ctx.fillText('P', p.x, p.y));
+    particles.forEach(p => { ctx.fillStyle = p.color; ctx.fillRect(p.x, p.y, 2, 2); });
+
+    // Draw UI
     ctx.fillStyle = 'white';
     ctx.font = '20px Arial';
     ctx.fillText(`Score: ${score}`, 10, 30);
+    ctx.fillText(`Lives: ${player.lives}`, canvasWidth - 100, 30);
+
     if (isGameOver) {
         ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
         ctx.fillRect(0, 0, canvasWidth, canvasHeight);
@@ -135,8 +200,10 @@ function gameOver() {
 }
 
 function resetGame() {
-    player.x = canvasWidth / 2 - 25; player.y = canvasHeight - 60;
-    bullets.length = 0; enemies.length = 0; score = 0; isGameOver = false;
+    player.x = canvasWidth / 2 - 25; player.y = canvasHeight - 60; player.lives = 3;
+    player.invincible = false; player.invincibilityTimer = 0; player.powerUpTimer = 0; player.fireCooldown = 0;
+    bullets.length = 0; enemies.length = 0; particles.length = 0; powerUps.length = 0;
+    score = 0; isGameOver = false;
     audio.playBgm();
     gameLoop();
 }
