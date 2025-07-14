@@ -1,3 +1,6 @@
+gemini cliに「スターフォースを作って」といって作らせているProjectです。  
+現時点ではどこが「スターフォースやねん」レベルですが、頑張ってもらいます。
+
 # Star Force (Gemini CLI Version)
 
 ## 概要
