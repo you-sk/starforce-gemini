@@ -22,6 +22,10 @@ let isBossActive = false;
 let isStageClearing = false;
 let enemySpawnTimer = 0;
 let animationFrameId; // Global variable to hold the animation frame ID
+let isJourneyActive = false;
+let journeyEnemySpawnedCount = 0;
+const maxJourneyEnemies = 30; // Adjust this number as needed
+let bossSpawned = false;
 
 // --- Asset Manager ---
 const assetManager = {
@@ -91,9 +95,21 @@ function update() {
     updatePowerUps();
 
     if (isBossActive) updateBoss();
-    else {
+    else if (isJourneyActive) {
         updateEnemies();
-        if (score >= 200 * stage) spawnBoss(); // Boss appears at 200 points * stage number
+        // Check if enough enemies have been spawned for the journey
+        if (journeyEnemySpawnedCount >= maxJourneyEnemies && !bossSpawned) {
+            isJourneyActive = false; // End journey
+            spawnBoss();
+            bossSpawned = true;
+        }
+    } else if (!bossSpawned) {
+        // Fallback for stage 1 or if journey is not active but boss hasn't spawned yet
+        updateEnemies();
+        if (score >= 200 * stage) {
+            spawnBoss();
+            bossSpawned = true;
+        }
     }
     handleCollisions();
 }
@@ -105,8 +121,14 @@ function updatePowerUps() { for (let i = powerUps.length - 1; i >= 0; i--) { con
 function updateEnemies() {
     enemySpawnTimer++;
     const spawnRate = Math.max(20, 100 - stage * 10);
-    if (enemySpawnTimer % spawnRate === 0) enemies.push({ x: Math.random() * (canvasWidth - 50), y: -50, width: 50, height: 50, type: 'enemy1', speed: 2 + stage * 0.2 });
-    if (enemySpawnTimer % (spawnRate * 2.5) === 0) enemies.push({ x: Math.random() * (canvasWidth - 50), y: -50, width: 50, height: 50, type: 'enemy2', speed: 1 + stage * 0.1, angle: 0 });
+    if (enemySpawnTimer % spawnRate === 0) {
+        enemies.push({ x: Math.random() * (canvasWidth - 50), y: -50, width: 50, height: 50, type: 'enemy1', speed: 2 + stage * 0.2 });
+        if (isJourneyActive) journeyEnemySpawnedCount++;
+    }
+    if (enemySpawnTimer % (spawnRate * 2.5) === 0) {
+        enemies.push({ x: Math.random() * (canvasWidth - 50), y: -50, width: 50, height: 50, type: 'enemy2', speed: 1 + stage * 0.1, angle: 0 });
+        if (isJourneyActive) journeyEnemySpawnedCount++;
+    }
     for (let i = enemies.length - 1; i >= 0; i--) {
         const e = enemies[i];
         if (e.type === 'enemy1') e.y += e.speed;
@@ -257,6 +279,9 @@ function nextStage() {
     // Reset positions but keep lives and score
     player.x = canvasWidth / 2 - 25; player.y = canvasHeight - 60;
     bullets.length = 0; enemies.length = 0; particles.length = 0; powerUps.length = 0; boss.bullets = [];
+    isJourneyActive = true; // Activate journey for the new stage
+    journeyEnemySpawnedCount = 0;
+    bossSpawned = false;
     // Restart the game loop after resetting state
     gameLoop();
 }
@@ -268,6 +293,9 @@ function resetGame() {
     player.x = canvasWidth / 2 - 25; player.y = canvasHeight - 60;
     bullets.length = 0; enemies.length = 0; particles.length = 0; powerUps.length = 0; boss.bullets = [];
     isGameOver = false; isBossActive = false; isStageClearing = false;
+    isJourneyActive = true; // Start with journey active
+    journeyEnemySpawnedCount = 0;
+    bossSpawned = false;
     audio.playBgm();
     gameLoop();
 }
